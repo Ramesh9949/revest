@@ -1,0 +1,95 @@
+pipeline{
+    
+    agent any
+    tools{
+        jdk 'jdk8'
+        gradle 'gradle'
+    }
+    environment{
+        VERSION = "${env.BUILD_ID}"
+    }
+    stages{
+        stage('checkout the code from github'){
+            steps{
+                git credentialsId: 'github', url: 'https://github.com/Ramesh9949/project-revest.git'
+            }
+        }
+        stage('gradle compile'){
+            steps{
+                sh 'chmod +x gradlew'
+                sh "./gradlew compilejava"
+            }
+        }
+        stage('gradle test'){
+            steps{
+                sh "./gradlew test"
+                sh 'chmod +x gradlew'
+            }
+        }
+        stage('sonar analysis'){
+            steps{
+                script{
+                    withSonarQubeEnv(credentialsId: 'sonar-token') {
+                    sh 'chmod +x gradlew'    
+                    sh './gradlew sonar'
+                    }
+
+                    //quality gate
+                    timeout(time: 10, unit: 'MINUTES'){
+                        def qg = waitforQualityGate()
+                        if (qg.status != 'OK'){
+                            error "pipeline is aborted due to qualitygate failure: ${qg.status}"
+                        }
+                    }
+
+                }
+            }
+        }
+
+        stage('Build gradle'){
+            steps{
+                sh 'chmod +x gradlew'
+                sh './gradlew build'
+            }
+        }
+        stage("OWASP Dependency Check"){
+            steps{
+                dependencyCheck additionalArguments: '--scan ./ --format HTML ', odcInstallation: 'DP-Check'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.html'
+            }
+        }
+        
+    stage('push to docker hub'){
+        steps{
+            script{
+                withCredentials([string(credentialsId: 'docker-key', variable: 'docker_password')]) {
+                     sh 'docker login -u ramesh2005 -p ${docker-hub}'
+                     sh 'docker tag bhavsingh/search:latest ramesh2005/bhavsingh:myfirstimagepush'
+                     sh 'docker push ramesh2005/bhavsingh:myfirstimagepush' 
+                }
+            }
+        }
+    }
+    stage('manual approval'){
+        steps{
+            script{
+                timeout(10) {
+                        mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD_NUMBER} <br> Go to build url and approve the deployment request <br> URL de build: ${env.BUILD_URL}", cc: '', charset: 'UTF-8', from: '', mimeType: 'text/html', replyTo: '', subject: "${currentBuild.result} CI: Project name -> ${env.JOB_NAME}", to: "mailtomohanse@gmail.com";  
+                        input(id: "", message: "Deploy ${params.project_name}?", ok: 'Deploy')
+                    }
+                }
+            }
+    }
+	    
+    stage('deploy to container'){
+        steps{
+            script{
+                withCredentials([string(credentialsId: 'docker-key', variable: 'docker_password')]) {
+                
+                    sh 'docker run -d --name bhavsingh -p 8082:8081  ramesh2005/bhavsingh'
+                }
+            }
+        }
+    }
+}
+}
